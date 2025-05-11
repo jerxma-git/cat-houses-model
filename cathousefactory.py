@@ -2,12 +2,14 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Union
 import simpy
-from models import CatHousePart, CatHouseSpec, CatHouseType, PremiumCatHouse, RawWoodPlank, RawFabricRoll, PaintBucket, StandardCatHouse
-from models import Color, WoodenHousePart, WoodenPartType, FabricHousePart, FabricPartType
-from models import StandardHouseSpec, PremiumHouseSpec
 import random
 import math
 from sortedcontainers import SortedList
+
+from models import CatHousePart, CatHouseSpec, CatHouseType, PremiumCatHouse, RawWoodPlank, RawFabricRoll, PaintBucket, StandardCatHouse
+from models import Color, WoodenHousePart, WoodenPartType, FabricHousePart, FabricPartType
+from models import StandardHouseSpec, PremiumHouseSpec
+from customrng import CustomRNG
 
 
 class CatFactoryConfig:
@@ -118,9 +120,9 @@ class HouseTestResult():
 # =============== #
 
 class CatHouseFactory:
-    def __init__(self, env: simpy.Environment, config: CatFactoryConfig):
+    def __init__(self, env: simpy.Environment, config: CatFactoryConfig, rng: CustomRNG):
         self.env = env
-
+        self.rng = rng
         self.raw_wood_planks = SortedList(key=lambda p: p.quality)
         self.raw_fabric_rolls = SortedList(key=lambda r: r.quality)
         self.paint_stock = SortedList(key=lambda r: r.quality)
