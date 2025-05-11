@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 import simpy
-from models import CatHousePart, CatHouseSpec, CatHouseType, PremiumCatHouse, RawWoodPlank, RawFabricRoll, PaintBucket
+from models import CatHousePart, CatHouseSpec, CatHouseType, PremiumCatHouse, RawWoodPlank, RawFabricRoll, PaintBucket, StandardCatHouse
 from models import Color, WoodenHousePart, WoodenPartType, FabricHousePart, FabricPartType
 from models import StandardHouseSpec, PremiumHouseSpec
 import random
@@ -208,14 +208,14 @@ class CatHouseFactory:
         raw_fabric_batch = [
             RawFabricRoll(
                 quality=random.uniform(0.7, 0.9)  # TODO: distribution + parametrize by housetype 
-            ) for house_type, cost in wood_costs.items() for _ in range(cost)
+            ) for house_type, cost in fabric_costs.items() for _ in range(cost)
         ]
 
         paint_batch = [
             PaintBucket(
                 quality=random.uniform(0.7, 0.9),  # TODO: distribution + parametrize by housetype 
                 color=random.choice(list(Color))
-            ) for house_type, cost in wood_costs.items() for _ in range(cost)
+            ) for house_type, cost in paint_costs.items() for _ in range(cost)
         ]
 
         # доставка материалов
@@ -343,17 +343,17 @@ class CatHouseFactory:
                 if house_build_result.value == HouseBuildResult.SUCCESSFUL:
                     continue
                 elif house_build_result.value == HouseBuildResult.BROKEN_PARTS:
-                    self.house_build_tasks += 1
+                    self.house_build_tasks[house_type] += 1
                 elif house_build_result.value == HouseBuildResult.NOT_ENOUGH_RESOURCES:
-                    self.house_build_tasks = 0
+                    self.house_build_tasks[house_type] = 0
                     break
 
     def build_house(self, house_type: CatHouseType):
         house_spec = self.config.HOUSE_SPECS[house_type]
-        parts_to_get = house_spec.get_parts()
+        part_types_to_get = house_spec.get_parts()
 
         retrieved_parts = []
-        for part_type in parts_to_get:
+        for part_type in part_types_to_get:
             if self.has_house_part(part_type, house_type):
                 retrieved_parts.append(self.get_house_part(part_type))
             else:
@@ -364,11 +364,11 @@ class CatHouseFactory:
 
         used_parts = [(part, random.uniform(0.0, 1.0) < self.config.BROKEN_PARTS_RATIO) for part in retrieved_parts]
         unbroken_parts = [part for part, is_broken in used_parts if not is_broken]
-        if len(unbroken_parts) > len(used_parts):
+        if len(unbroken_parts) < len(used_parts):
             self.return_parts(unbroken_parts)
             return self.env.event().succeed(HouseBuildResult.BROKEN_PARTS)
         
-        if isinstance(house_type, CatHouseType.PREMIUM):
+        if house_type == CatHouseType.PREMIUM:
             build_quality = random.uniform(0.8, 1.0)
             self.built_houses[house_type].append(
                 PremiumCatHouse(
@@ -376,10 +376,10 @@ class CatHouseFactory:
                     parts=unbroken_parts
                 )
             )
-        elif isinstance(house_type, CatHouseType.STANDARD):
+        elif house_type == CatHouseType.STANDARD:
             build_quality = random.uniform(0.7, 0.9)
             self.built_houses[house_type].append(
-                PremiumCatHouse(
+                StandardCatHouse(
                     build_quality=build_quality,
                     parts=unbroken_parts
                 )
@@ -394,31 +394,31 @@ class CatHouseFactory:
             if isinstance(part, WoodenHousePart):
                 self.wooden_parts_store[part.get_type()].add(part)
             elif isinstance(part, FabricHousePart):
-                self.wooden_parts_store[part.get_type()].add(part)
+                self.fabric_parts_store[part.get_type()].add(part)
     
-    def has_house_part(self, house_part: CatHousePart, house_type: CatHouseType):
-        if isinstance(house_part, WoodenHousePart):
+    def has_house_part(self, part_type: Union[WoodenPartType, FabricPartType], house_type: CatHouseType):
+        if isinstance(part_type, WoodenPartType):
             return (
-                len(self.wooden_parts_store[house_part]) > 0
+                len(self.wooden_parts_store[part_type]) > 0
                 and (
                     house_type == CatHouseType.STANDARD 
-                    or self.wooden_parts_store[house_part][-1].quality > self.config.MIN_PREMIUM_WOODEN_PART_QUALITY
+                    or self.wooden_parts_store[part_type][-1].quality > self.config.MIN_PREMIUM_WOODEN_PART_QUALITY
                 )
             )
-        elif isinstance(house_part, WoodenHousePart):
+        elif isinstance(part_type, FabricPartType):
             return (
-                len(self.wooden_parts_store[house_part]) > 0
+                len(self.fabric_parts_store[part_type]) > 0
                 and (
                     house_type == CatHouseType.STANDARD 
-                    or self.wooden_parts_store[house_part][-1].quality > self.config.MIN_PREMIUM_FABRIC_PART_QUALITY
+                    or self.fabric_parts_store[part_type][-1].quality > self.config.MIN_PREMIUM_FABRIC_PART_QUALITY
                 )
             )
         
-    def get_house_part(self, house_part: CatHousePart):
-        if isinstance(house_part, WoodenHousePart):
-            return self.wooden_parts_store[house_part].pop()
-        if isinstance(house_part, FabricHousePart):
-            return self.fabric_parts_store[house_part].pop()
+    def get_house_part(self, part_type: Union[WoodenPartType, FabricPartType]):
+        if isinstance(part_type, WoodenPartType):
+            return self.wooden_parts_store[part_type].pop()
+        if isinstance(part_type, FabricPartType):
+            return self.fabric_parts_store[part_type].pop()
         
         
         
