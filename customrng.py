@@ -14,12 +14,15 @@ class CustomRNG:
         self.c = 1013904223
         self.state = seed if seed is not None else int(time.time() * 1000) % self.m
     
-    def uniform(self):
+    def uniform(self, a=0, b=1):
         self.state = (self.a * self.state + self.c) % self.m
-        return self.state / self.m
+        return a + self.state / self.m * (b - a)
     
     def randint(self, a, b):
         return a + int(self.uniform() * (b - a + 1))
+    
+    def choice(self, sequence):
+        return sequence[int(self.uniform() * len(sequence))]
     
     def exponential(self, scale):
         u = 1 - self.uniform() # избегаем 0
