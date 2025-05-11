@@ -6,11 +6,10 @@ import random
 import math
 from sortedcontainers import SortedList
 
-from models import CatHousePart, CatHouseSpec, CatHouseType, PremiumCatHouse, RawWoodPlank, RawFabricRoll, PaintBucket, StandardCatHouse
+from models import CatHouse, CatHousePart, CatHouseSpec, CatHouseType, PremiumCatHouse, RawWoodPlank, RawFabricRoll, PaintBucket, StandardCatHouse
 from models import Color, WoodenHousePart, WoodenPartType, FabricHousePart, FabricPartType
 from models import StandardHouseSpec, PremiumHouseSpec
 from customrng import CustomRNG
-
 
 class CatFactoryConfig:
     PLANNED_HOUSES_NUM: float
@@ -38,6 +37,54 @@ class CatFactoryConfig:
     MAX_ENTRY_TIME: int
     MIN_TIME_INSIDE: int
     MAX_TEST_TIME: int
+    
+    DEFAULT_RNG_CONFIG = {
+        "material_delivery_time": {
+            "mu": 120,
+            "sigma": 20
+        },
+        "wooden_processing_time": {
+            "mu": 1,
+            "sigma": 2,
+            "min_time": 0.5,
+            "max_time": 6
+        },
+        "fabric_processing_time": {
+            "mu": 0.5,
+            "sigma": 1,
+            "min_time": 0.25,
+            "max_time": 3
+        },
+        "raw_material_quality": {
+            CatHouseType.STANDARD: {
+                "mu": 0.7,
+                "sigma": 0.1
+            },
+            CatHouseType.PREMIUM: {
+                "mu": 0.85,
+                "sigma": 0.05
+            },
+        },
+        "house_build_quality": {
+            CatHouseType.STANDARD: {
+                "mu": 0.7,
+                "sigma": 0.1
+            },
+            CatHouseType.PREMIUM: {
+                "mu": 0.85,
+                "sigma": 0.05
+            },
+        },
+        "entry_timing": {
+            "scale": 15,
+            "base_multiplier": 1.3
+        },
+        "time_inside": {
+            "base_mu": 20,
+            "sigma": 5
+        }
+    }
+    RNG_CONFIG: Dict
 
     def __init__(
             self,
@@ -55,7 +102,8 @@ class CatFactoryConfig:
             CATS_NUM = 4,
             MAX_ENTRY_TIME = 30,
             MIN_TIME_INSIDE = 5,
-            MAX_TEST_TIME = 60
+            MAX_TEST_TIME = 60,
+            RNG_CONFIG = DEFAULT_RNG_CONFIG
         ):
         self.PLANNED_HOUSES_NUM = PLANNED_HOUSES_NUM
         self.PLANNED_PREMIUM_RATIO = PLANNED_PREMIUM_RATIO
@@ -72,6 +120,7 @@ class CatFactoryConfig:
         self.MAX_ENTRY_TIME = MAX_ENTRY_TIME
         self.MIN_TIME_INSIDE = MIN_TIME_INSIDE
         self.MAX_TEST_TIME = MAX_TEST_TIME
+        self.RNG_CONFIG = RNG_CONFIG
 
         self.PLANNED_HOUSES_NUMS = {
             CatHouseType.PREMIUM: self.get_planned_premium_houses_num(),
@@ -79,7 +128,7 @@ class CatFactoryConfig:
         }
 
         self.HOUSE_SPECS = {
-           CatHouseType.STANDARD: StandardHouseSpec(), 
+            CatHouseType.STANDARD: StandardHouseSpec(), 
             CatHouseType.PREMIUM: PremiumHouseSpec()
         }
 
@@ -88,6 +137,7 @@ class CatFactoryConfig:
     
     def get_planned_standard_houses_num(self):
         return self.PLANNED_HOUSES_NUM - self.get_planned_premium_houses_num()
+
 
 @dataclass
 class HouseTestMeta():
@@ -123,18 +173,33 @@ class CatHouseFactory:
     def __init__(self, env: simpy.Environment, config: CatFactoryConfig, rng: CustomRNG):
         self.env = env
         self.rng = rng
+        self.config = config
+
+        self.stats = []
+
+    def run(self, *args, **kwargs):
+        # Запуск процессов
+        self.env.process(self.orchestrate())
+        self.init()
+        self.env.run(*args, **kwargs)
+
+        self.stats.append(self.current_stats)
+
+    def init(self):
+        self.current_stats = {
+            "execution_times_by_phase": dict(),
+            "house_testing_metas": [],
+            "planned_houses_num": self.config.PLANNED_HOUSES_NUM
+        }
         self.raw_wood_planks = SortedList(key=lambda p: p.quality)
         self.raw_fabric_rolls = SortedList(key=lambda r: r.quality)
         self.paint_stock = SortedList(key=lambda r: r.quality)
 
-        self.config = config
-        
-        # Очереди для обработанных деталей
         self.wooden_parts_store = {t: SortedList(key=lambda p: p.quality) for t in set(WoodenPartType)}
         self.fabric_parts_store = {t: SortedList(key=lambda p: p.quality) for t in set(FabricPartType)}
 
-        self.builders = simpy.Resource(env, self.config.BUILDERS_NUM)
-        self.cats = simpy.Resource(env, self.config.CATS_NUM)
+        self.builders = simpy.Resource(self.env, self.config.BUILDERS_NUM)
+        self.cats = simpy.Resource(self.env, self.config.CATS_NUM)
 
         self.house_build_tasks = {
             CatHouseType.STANDARD: 0,
@@ -151,16 +216,34 @@ class CatHouseFactory:
             HouseVerdict.SUITABLE_FOR_SALE: [],
             HouseVerdict.UTILIZATION: []
         }
-    
-    def run(self, *args, **kwargs):
-        # Запуск процессов
-        self.env.process(self.orchestrate())
-        self.env.run(*args, **kwargs)
+        
+
+    def get_stats(self):
+        return self.stats
 
 
     def orchestrate(self):
-        yield self.env.process(self.material_delivery())
+        start_time = self.env.now
+
+        yield from self.materials_supply_phase()
+        yield from self.manufacturing_parts_phase()
+        yield from self.assembling_houses_phase()
+        yield from self.testing_houses_phase()
         
+        total_execution_time = self.env.now - start_time
+        self.current_stats["total_execution_time"] = total_execution_time
+
+    def materials_supply_phase(self):
+        print(f"{self.env.now} Начинается фаза поставки сырья")
+        phase_start = self.env.now
+        yield self.env.process(self.material_delivery())
+        print(f"{self.env.now} Завершена фаза поставки сырья")
+        execution_time = self.env.now - phase_start
+        self.current_stats["execution_times_by_phase"]["materials_supply_phase"] = execution_time
+
+    def manufacturing_parts_phase(self):
+        print(f"{self.env.now} Начинается фаза производства деталей")
+        phase_start = self.env.now
         # проработка премиум деталей
         yield simpy.AllOf(
             self.env,
@@ -176,8 +259,10 @@ class CatHouseFactory:
                 self.env.process(self.part_processing(set(WoodenPartType), CatHouseType.STANDARD)),
                 self.env.process(self.part_processing(set(FabricPartType), CatHouseType.STANDARD))
             ])
-
-        print(f"{self.env.now} Завершена обработка деталей")
+        execution_time = self.env.now - phase_start
+        self.current_stats["execution_times_by_phase"]["manufacturing_parts_phase"] = execution_time
+        
+        print(f"{self.env.now} Завершена фаза производства деталей")
         print(f"Состояние:")
         print(f"{len(self.raw_wood_planks)} планок дерева")
         print(f"{len(self.raw_fabric_rolls)} рулонов ткани")
@@ -185,35 +270,57 @@ class CatHouseFactory:
         print(f"{sum(len(parts) for parts in self.wooden_parts_store.values())} деревянных деталей")
         print(f"{sum(len(parts) for parts in self.fabric_parts_store.values())} тканевых деталей")
 
-        print(f"{self.env.now} Начинается сборка премиум домов")
+    def assembling_houses_phase(self):
+        print(f"{self.env.now} Начинается фаза сборки домиков")
+        start_time = self.env.now
+
+        print(f"{self.env.now} Начинается сборка премиум домиков")
         yield self.env.process(self.build_houses(CatHouseType.PREMIUM))
-        print(f"{self.env.now} Cборка премиум домов завершена")
-        print(f"{self.env.now} Начинается сборка стандартных домов")
+        print(f"{self.env.now} Cборка премиум домиков завершена")
+
+        print(f"{self.env.now} Начинается сборка стандартных домиков")
         yield self.env.process(self.build_houses(CatHouseType.STANDARD))
-        print(f"{self.env.now} Cборка стандартных домов завершена")
-    
+        print(f"{self.env.now} Cборка стандартных домиков завершена")
+        
+        execution_time = self.env.now - start_time
+        self.current_stats["execution_times_by_phase"]["assembling_houses_phase"] = execution_time
+
+        print(f"{self.env.now} Завершена фаза сборки домиков")
+        
         print(f"Состояние:")
         print(f"{sum(len(parts) for parts in self.wooden_parts_store.values())} деревянных деталей")
         print(f"{sum(len(parts) for parts in self.fabric_parts_store.values())} тканевых деталей")
         print(f"{len(self.built_houses[CatHouseType.PREMIUM])} премиум домиков")
         print(f"{len(self.built_houses[CatHouseType.STANDARD])} стандартных домиков")
+
+        
+    def testing_houses_phase(self):
+        print(f"{self.env.now} Начинается фаза тестирования домиков")
+        start_time = self.env.now
         
         yield self.env.process(self.test_houses())
+        
+        execution_time = self.env.now - start_time
+        self.current_stats["execution_times_by_phase"]["testing_houses_phase"] = execution_time
 
-        print(f"{self.env.now} Завершено тестирование домиков")
+        print(f"{self.env.now} Завершена фаза тестирования домиков")
+
         print(f"Состояние:")
         print(f"{len(self.houses_to_test)} непротестированных домиков")
         print(f"{sum(len(results) for results in self.house_test_results.values())} всего протестировано домиков")
         print(f"{len(self.house_test_results[HouseVerdict.UTILIZATION])} к утилизации")
         print(f"{len(self.house_test_results[HouseVerdict.SUITABLE_FOR_SALE])} к продаже")
 
-
+        self.current_stats["for_utilization"] = len(self.house_test_results[HouseVerdict.UTILIZATION])
+        self.current_stats["for_sale"] = len(self.house_test_results[HouseVerdict.SUITABLE_FOR_SALE])
         
+
 
     def material_delivery(self):
         print(f"{self.env.now}: Начата закупка сырья")
 
         # расчет необходимых материалов
+        rng_config = self.config.RNG_CONFIG
         premium_houses_num = self.config.get_planned_premium_houses_num()
         standard_houses_num = self.config.get_planned_standard_houses_num()
         print(f"Запланировано {premium_houses_num} премиум и {standard_houses_num} стандартных домиков")
@@ -237,24 +344,37 @@ class CatHouseFactory:
             for house_type in house_types
         }
 
-        yield self.env.timeout(15)
+        execution_time = int(self.rng.normal(
+            mu=rng_config["material_delivery_time"]["mu"],
+            sigma=rng_config["material_delivery_time"]["sigma"]))        
+        
+        yield self.env.timeout(execution_time)
 
         raw_wood_batch = [
             RawWoodPlank(
-                quality=random.uniform(0.7, 0.9)  # TODO: distribution + parametrize by housetype 
+                quality=self.rng.normal(
+                    mu=rng_config["raw_material_quality"][house_type]["mu"],
+                    sigma=rng_config["raw_material_quality"][house_type]["sigma"] 
+                )
             ) for house_type, cost in wood_costs.items() for _ in range(cost)
         ]
 
         raw_fabric_batch = [
             RawFabricRoll(
-                quality=random.uniform(0.7, 0.9)  # TODO: distribution + parametrize by housetype 
+                quality=self.rng.normal(
+                    mu=rng_config["raw_material_quality"][house_type]["mu"],
+                    sigma=rng_config["raw_material_quality"][house_type]["sigma"] 
+                )
             ) for house_type, cost in fabric_costs.items() for _ in range(cost)
         ]
 
         paint_batch = [
             PaintBucket(
-                quality=random.uniform(0.7, 0.9),  # TODO: distribution + parametrize by housetype 
-                color=random.choice(list(Color))
+                quality=self.rng.normal(
+                    mu=rng_config["raw_material_quality"][house_type]["mu"],
+                    sigma=rng_config["raw_material_quality"][house_type]["sigma"] 
+                ),
+                color=self.rng.choice(list(Color))
             ) for house_type, cost in paint_costs.items() for _ in range(cost)
         ]
 
@@ -277,7 +397,7 @@ class CatHouseFactory:
 
     def part_processing(self, part_types, house_type: CatHouseType):
         print(f"{self.env.now} начало изготовления деталей типов {part_types} для дома типа {house_type}")
-
+        
         house_spec = self.config.HOUSE_SPECS[house_type] 
         planned_houses_num = self.config.PLANNED_HOUSES_NUMS[house_type]
         parts_to_make = house_spec.get_parts_by_types(part_types) * planned_houses_num
@@ -323,12 +443,18 @@ class CatHouseFactory:
     def make_fabric_part(self, part_type: FabricPartType):
         plank: RawFabricRoll = self.raw_fabric_rolls.pop()
         paint_bucket: PaintBucket = self.paint_stock.pop()
+        rng_config = self.config.RNG_CONFIG
 
-        # print(f"{self.env.now} Изготавливаем деталь {part_type}")
-        yield self.env.timeout(10) # TODO: rng
+        execution_time = int(self.rng.truncated_normal(
+            mu=rng_config["fabric_processing_time"]["mu"],
+            sigma=rng_config["fabric_processing_time"]["sigma"],
+            a=rng_config["fabric_processing_time"]["min_time"],
+            b=rng_config["fabric_processing_time"]["max_time"],
+            ))        
+        yield self.env.timeout(execution_time)
         
         # break logic
-        if (random.uniform(0.0, 1.0) < self.config.BROKEN_ROLLS_RATIO):
+        if (self.rng.uniform(0.0, 1.0) < self.config.BROKEN_ROLLS_RATIO):
             print(f"{self.env.now} Сломалась деталь {part_type}")
             return self.env.event().succeed(False)  
 
@@ -340,19 +466,23 @@ class CatHouseFactory:
             type=part_type)
         self.fabric_parts_store[part_type].add(part)
 
-        # print(f"{self.env.now} Готова деталь {part_type}")
-
         return self.env.event().succeed(True)
     
     def make_wooden_part(self, part_type: WoodenPartType):
         plank: RawWoodPlank = self.raw_wood_planks.pop()
         paint_bucket: PaintBucket = self.paint_stock.pop()
+        rng_config = self.config.RNG_CONFIG
 
-        # print(f"{self.env.now} Изготавливаем деталь {part_type}")
-        yield self.env.timeout(10)
+        execution_time = int(self.rng.truncated_normal(
+            mu=rng_config["wooden_processing_time"]["mu"],
+            sigma=rng_config["wooden_processing_time"]["sigma"],
+            a=rng_config["wooden_processing_time"]["min_time"],
+            b=rng_config["wooden_processing_time"]["max_time"]
+            ))        
+        yield self.env.timeout(execution_time)
         
         # break logic 
-        if (random.uniform(0.0, 1.0) < self.config.BROKEN_PLANKS_RATIO):
+        if (self.rng.uniform(0.0, 1.0) < self.config.BROKEN_PLANKS_RATIO):
             print(f"{self.env.now} Сломалась деталь {part_type}")
             return self.env.event().succeed(False)  
 
@@ -364,8 +494,6 @@ class CatHouseFactory:
             color=paint_bucket.color, 
             type=part_type)
         self.wooden_parts_store[part_type].add(part)
-
-        # print(f"{self.env.now} Готова деталь {part_type}")
 
         return self.env.event().succeed(True)
             
@@ -396,6 +524,7 @@ class CatHouseFactory:
             print(f"{self.env.now} Смена сборщика завершена, задач на домик {house_type} больше нет")
 
     def build_house(self, house_type: CatHouseType):
+        rng_config = self.config.RNG_CONFIG
         house_spec = self.config.HOUSE_SPECS[house_type]
         part_types_to_get = house_spec.get_parts()
 
@@ -409,14 +538,17 @@ class CatHouseFactory:
 
         yield self.env.timeout(random.randint(10, 20))
 
-        used_parts = [(part, random.uniform(0.0, 1.0) < self.config.BROKEN_PARTS_RATIO) for part in retrieved_parts]
+        used_parts = [(part, self.rng.uniform(0.0, 1.0) < self.config.BROKEN_PARTS_RATIO) for part in retrieved_parts]
         unbroken_parts = [part for part, is_broken in used_parts if not is_broken]
         if len(unbroken_parts) < len(used_parts):
             self.return_parts(unbroken_parts)
             return self.env.event().succeed(HouseBuildResult.BROKEN_PARTS)
         
         if house_type == CatHouseType.PREMIUM:
-            build_quality = random.uniform(0.8, 1.0)
+            build_quality = self.rng.normal(
+                mu=rng_config["house_build_quality"][CatHouseType.PREMIUM]["mu"],
+                sigma=rng_config["house_build_quality"][CatHouseType.PREMIUM]["sigma"]
+            )
             self.built_houses[house_type].append(
                 PremiumCatHouse(
                     build_quality=build_quality,
@@ -424,7 +556,10 @@ class CatHouseFactory:
                 )
             )
         elif house_type == CatHouseType.STANDARD:
-            build_quality = random.uniform(0.7, 0.9)
+            build_quality = self.rng.normal(
+                mu=rng_config["house_build_quality"][CatHouseType.STANDARD]["mu"],
+                sigma=rng_config["house_build_quality"][CatHouseType.STANDARD]["sigma"]
+            )
             self.built_houses[house_type].append(
                 StandardCatHouse(
                     build_quality=build_quality,
@@ -480,23 +615,41 @@ class CatHouseFactory:
             print(f"{self.env.now} Смена котика завершена, задач тестирование домиков больше нет")
 
     def test_house(self):
-        house = self.houses_to_test.pop()
+        rng_config = self.config.RNG_CONFIG
+        house: CatHouse = self.houses_to_test.pop()
         max_test_time = self.config.MAX_TEST_TIME
 
-        entry_timing = random.randint(10, 60)
+        qualities = [part.quality for part in house.parts] + [house.build_quality]
+        overall_quality = math.prod(qualities) ** (1/len(qualities))
+        
+        base_scale = rng_config["entry_timing"]["scale"]
+        base_multiplier = rng_config["entry_timing"]["base_multiplier"]
+        scale = base_scale / (base_multiplier - overall_quality)
+        entry_timing = min(max(int(self.rng.exponential(scale=scale)), 0), max_test_time)
         entry_timing = entry_timing if entry_timing <= self.config.MAX_ENTRY_TIME else None 
 
-        time_inside = random.randint(10, 60)
+        base_mu = rng_config["time_inside"]["base_mu"]
+        sigma = rng_config["time_inside"]["sigma"]
+        time_inside = min(max(
+            int(self.rng.normal(
+            mu=base_mu * overall_quality, 
+            sigma=sigma)
+            ), 0), max_test_time)
         time_inside = None if entry_timing is None else min(time_inside, max_test_time - entry_timing)
 
         yield self.env.timeout(max_test_time if entry_timing is None else entry_timing + time_inside)
-         
+        
         house_test_meta = HouseTestMeta(
             entry_timing=entry_timing,
             time_inside=time_inside
         )
         house_test_result = self.make_test_result(house_test_meta)
         self.house_test_results[house_test_result.verdict].append(house)
+
+        self.current_stats["house_testing_metas"].append({
+            "entry_timing": entry_timing,
+            "time_inside": time_inside
+        })
 
         return self.env.event().succeed()        
 
@@ -526,6 +679,3 @@ class CatHouseFactory:
         )
 
         
-        
-
-    
