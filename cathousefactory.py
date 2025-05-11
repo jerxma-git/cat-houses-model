@@ -333,11 +333,17 @@ class CatHouseFactory:
 
     def build_houses(self, house_type: CatHouseType):
         self.house_build_tasks[house_type] = self.config.PLANNED_HOUSES_NUMS[house_type]
+        builders_jobs = [self.env.process(self.builder_job(house_type)) for _ in range(self.builders.capacity)]
+        yield simpy.AllOf(self.env, builders_jobs)
 
-        while self.house_build_tasks[house_type] > 0:
-            with self.builders.request() as builder_request:
-                yield builder_request
+        
 
+    def builder_job(self, house_type):
+        print(f"{self.env.now} Начата смена сотрудника, ждем освобождения")
+        with self.builders.request() as builder_request:
+            yield builder_request
+            print(f"{self.env.now} Сотрудник приступил к работе")
+            while self.house_build_tasks[house_type] > 0:
                 self.house_build_tasks[house_type] -= 1
                 house_build_result = yield self.env.process(self.build_house(house_type))
                 if house_build_result.value == HouseBuildResult.SUCCESSFUL:
@@ -347,6 +353,7 @@ class CatHouseFactory:
                 elif house_build_result.value == HouseBuildResult.NOT_ENOUGH_RESOURCES:
                     self.house_build_tasks[house_type] = 0
                     break
+            print(f"{self.env.now} Смена сотрудника завершена, задач на домик {house_type} больше нет")
 
     def build_house(self, house_type: CatHouseType):
         house_spec = self.config.HOUSE_SPECS[house_type]
@@ -360,7 +367,7 @@ class CatHouseFactory:
                 self.return_parts(retrieved_parts)
                 return self.env.event().succeed(HouseBuildResult.NOT_ENOUGH_RESOURCES)
 
-        yield self.env.timeout(10)
+        yield self.env.timeout(random.randint(10, 20))
 
         used_parts = [(part, random.uniform(0.0, 1.0) < self.config.BROKEN_PARTS_RATIO) for part in retrieved_parts]
         unbroken_parts = [part for part, is_broken in used_parts if not is_broken]
