@@ -33,6 +33,10 @@ class CatFactoryConfig:
     BUILDERS_NUM: int
     CATS_NUM: int
 
+    MAX_ENTRY_TIME: int
+    MIN_TIME_INSIDE: int
+    MAX_TEST_TIME: int
+
     def __init__(
             self,
             PLANNED_HOUSES_NUM = 100,
@@ -46,7 +50,10 @@ class CatFactoryConfig:
             BROKEN_ROLLS_RATIO = 0.02,
             BROKEN_PARTS_RATIO = 0.02,
             BUILDERS_NUM = 4,
-            CATS_NUM = 4
+            CATS_NUM = 4,
+            MAX_ENTRY_TIME = 30,
+            MIN_TIME_INSIDE = 5,
+            MAX_TEST_TIME = 60
         ):
         self.PLANNED_HOUSES_NUM = PLANNED_HOUSES_NUM
         self.PLANNED_PREMIUM_RATIO = PLANNED_PREMIUM_RATIO
@@ -60,6 +67,9 @@ class CatFactoryConfig:
         self.BROKEN_PARTS_RATIO = BROKEN_PARTS_RATIO
         self.BUILDERS_NUM = BUILDERS_NUM
         self.CATS_NUM = CATS_NUM
+        self.MAX_ENTRY_TIME = MAX_ENTRY_TIME
+        self.MIN_TIME_INSIDE = MIN_TIME_INSIDE
+        self.MAX_TEST_TIME = MAX_TEST_TIME
 
         self.PLANNED_HOUSES_NUMS = {
             CatHouseType.PREMIUM: self.get_planned_premium_houses_num(),
@@ -77,11 +87,31 @@ class CatFactoryConfig:
     def get_planned_standard_houses_num(self):
         return self.PLANNED_HOUSES_NUM - self.get_planned_premium_houses_num()
 
+@dataclass
+class HouseTestMeta():
+    entry_timing: int
+    time_inside: int
 
 class HouseBuildResult(Enum):
     NOT_ENOUGH_RESOURCES = 1
     SUCCESSFUL = 2
     BROKEN_PARTS = 3
+
+class HouseVerdict(Enum):
+    SUITABLE_FOR_SALE = 1
+    UTILIZATION = 2
+
+class VerdictReason(Enum):
+    NO_ENTRY = 1
+    LATE_ENTRY = 2
+    QUICK_LEAVE = 3
+    ALL_TESTS_PASSED = 4
+
+@dataclass
+class HouseTestResult():
+    meta: HouseTestMeta
+    verdict: HouseVerdict
+    reason: VerdictReason
 
 # =============== #
 #    СИМУЛЯЦИЯ    #
@@ -90,9 +120,6 @@ class HouseBuildResult(Enum):
 class CatHouseFactory:
     def __init__(self, env: simpy.Environment, config: CatFactoryConfig):
         self.env = env
-        # self.raw_wood_planks = simpy.FilterStore(env, init=0)
-        # self.raw_fabric_rolls = simpy.FilterStore(env, init=0)
-        # self.paint_stock = simpy.FilterStore(env, init=0)
 
         self.raw_wood_planks = SortedList(key=lambda p: p.quality)
         self.raw_fabric_rolls = SortedList(key=lambda r: r.quality)
@@ -116,6 +143,12 @@ class CatHouseFactory:
             CatHouseType.STANDARD: [],
             CatHouseType.PREMIUM: []
         } 
+
+        self.houses_to_test = []
+        self.house_test_results = {
+            HouseVerdict.SUITABLE_FOR_SALE: [],
+            HouseVerdict.UTILIZATION: []
+        }
     
     def run(self, *args, **kwargs):
         # Запуск процессов
@@ -157,15 +190,20 @@ class CatHouseFactory:
         yield self.env.process(self.build_houses(CatHouseType.STANDARD))
         print(f"{self.env.now} Cборка стандартных домов завершена")
     
-        print(f"{self.env.now} Завершена обработка деталей")
         print(f"Состояние:")
-        print(f"{len(self.raw_wood_planks)} планок дерева")
-        print(f"{len(self.raw_fabric_rolls)} рулонов ткани")
-        print(f"{len(self.paint_stock)} ведер краски")
         print(f"{sum(len(parts) for parts in self.wooden_parts_store.values())} деревянных деталей")
         print(f"{sum(len(parts) for parts in self.fabric_parts_store.values())} тканевых деталей")
         print(f"{len(self.built_houses[CatHouseType.PREMIUM])} премиум домиков")
         print(f"{len(self.built_houses[CatHouseType.STANDARD])} стандартных домиков")
+        
+        yield self.env.process(self.test_houses())
+
+        print(f"{self.env.now} Завершено тестирование домиков")
+        print(f"Состояние:")
+        print(f"{len(self.houses_to_test)} непротестированных домиков")
+        print(f"{sum(len(results) for results in self.house_test_results.values())} всего протестировано домиков")
+        print(f"{len(self.house_test_results[HouseVerdict.UTILIZATION])} к утилизации")
+        print(f"{len(self.house_test_results[HouseVerdict.SUITABLE_FOR_SALE])} к продаже")
 
 
         
@@ -339,10 +377,10 @@ class CatHouseFactory:
         
 
     def builder_job(self, house_type):
-        print(f"{self.env.now} Начата смена сотрудника, ждем освобождения")
+        print(f"{self.env.now} Начата смена сборщика, ждем освобождения")
         with self.builders.request() as builder_request:
             yield builder_request
-            print(f"{self.env.now} Сотрудник приступил к работе")
+            print(f"{self.env.now} Сборщик приступил к работе")
             while self.house_build_tasks[house_type] > 0:
                 self.house_build_tasks[house_type] -= 1
                 house_build_result = yield self.env.process(self.build_house(house_type))
@@ -353,7 +391,7 @@ class CatHouseFactory:
                 elif house_build_result.value == HouseBuildResult.NOT_ENOUGH_RESOURCES:
                     self.house_build_tasks[house_type] = 0
                     break
-            print(f"{self.env.now} Смена сотрудника завершена, задач на домик {house_type} больше нет")
+            print(f"{self.env.now} Смена сборщика завершена, задач на домик {house_type} больше нет")
 
     def build_house(self, house_type: CatHouseType):
         house_spec = self.config.HOUSE_SPECS[house_type]
@@ -393,9 +431,6 @@ class CatHouseFactory:
             )
         return self.env.event().succeed(HouseBuildResult.SUCCESSFUL)
         
-        
-
-
     def return_parts(self, parts: List[CatHousePart]):
         for part in parts:
             if isinstance(part, WoodenHousePart):
@@ -427,6 +462,67 @@ class CatHouseFactory:
         if isinstance(part_type, FabricPartType):
             return self.fabric_parts_store[part_type].pop()
         
+    
+    def test_houses(self):
+        self.houses_to_test = [house for house_type in set(CatHouseType) for house in self.built_houses[house_type]]
+        cats_jobs = [self.env.process(self.cat_job()) for _ in range(self.cats.capacity)]
+        yield simpy.AllOf(self.env, cats_jobs)
+
+    def cat_job(self):
+        print(f"{self.env.now} Начата смена котика, ждем приступления")
+        with self.cats.request() as cat_request:
+            yield cat_request
+            print(f"{self.env.now} Котик приступил к работе")
+            while len(self.houses_to_test) > 0:
+                yield self.env.process(self.test_house())
+            print(f"{self.env.now} Смена котика завершена, задач тестирование домиков больше нет")
+
+    def test_house(self):
+        house = self.houses_to_test.pop()
+        max_test_time = self.config.MAX_TEST_TIME
+
+        entry_timing = random.randint(10, 60)
+        entry_timing = entry_timing if entry_timing <= self.config.MAX_ENTRY_TIME else None 
+
+        time_inside = random.randint(10, 60)
+        time_inside = None if entry_timing is None else min(time_inside, max_test_time - entry_timing)
+
+        yield self.env.timeout(max_test_time if entry_timing is None else entry_timing + time_inside)
+         
+        house_test_meta = HouseTestMeta(
+            entry_timing=entry_timing,
+            time_inside=time_inside
+        )
+        house_test_result = self.make_test_result(house_test_meta)
+        self.house_test_results[house_test_result.verdict].append(house)
+
+        return self.env.event().succeed()        
+
+    def make_test_result(self, meta: HouseTestMeta):
+        if meta.entry_timing is None:
+            return HouseTestResult(
+                meta=meta,
+                verdict=HouseVerdict.UTILIZATION,
+                reason=VerdictReason.NO_ENTRY
+            )
+        if meta.entry_timing > self.config.MAX_ENTRY_TIME:
+            return HouseTestResult(
+                meta=meta,
+                verdict=HouseVerdict.UTILIZATION,
+                reason=VerdictReason.LATE_ENTRY
+            )
+        if meta.time_inside < self.config.MIN_TIME_INSIDE:
+            return HouseTestResult(
+                meta=meta,
+                verdict=HouseVerdict.UTILIZATION,
+                reason=VerdictReason.QUICK_LEAVE
+            )
+        return HouseTestResult(
+            meta=meta,
+            verdict=HouseVerdict.SUITABLE_FOR_SALE,
+            reason=VerdictReason.ALL_TESTS_PASSED
+        )
+
         
         
 
