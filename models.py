@@ -81,27 +81,30 @@ class CatHouseSpec:
     
     def get_parts_by_types(self, types):
         return [t for t,c in self.get_part_counts_by_types(types).items() for _ in range(c)]
+    
+    def get_parts(self):
+        return self.get_parts_by_types(None)
 
 
 
-class StandardHouseSpec(CatHouseSpec):
+class PremiumHouseSpec(CatHouseSpec):
     def __init__(self):
         parts = {
             WoodenPartType.TYPE1: 15,
             WoodenPartType.TYPE2: 1,
             WoodenPartType.TYPE3: 3,
-            # FabricPartType.TYPE1: 3,
-            # FabricPartType.TYPE2: 2
+            FabricPartType.TYPE1: 3,
+            FabricPartType.TYPE2: 2
         }
         min_quality = 0.8
         super().__init__(parts, min_quality)
 
-class PremiumHouseSpec(CatHouseSpec):
+class StandardHouseSpec(CatHouseSpec):
     def __init__(self):
         parts = {
             WoodenPartType.TYPE1: 10,
             WoodenPartType.TYPE2: 1,
-            # FabricPartType.TYPE1: 3
+            FabricPartType.TYPE1: 3
         }
         min_quality = None
         super().__init__(parts, min_quality)
@@ -136,8 +139,8 @@ class CatHouse:
 
 class StandardCatHouse(CatHouse):
     def __init__(self, build_quality, parts):
-        super().__init__(CatHouseType.STANDARD, PremiumHouseSpec(), build_quality, parts)
+        super().__init__(CatHouseType.STANDARD, StandardHouseSpec(), build_quality, parts)
 
 class PremiumCatHouse(CatHouse):
     def __init__(self, build_quality, parts):
-        super().__init__(CatHouseType.PREMIUM, StandardHouseSpec(), build_quality, parts)
+        super().__init__(CatHouseType.PREMIUM, PremiumHouseSpec(), build_quality, parts)

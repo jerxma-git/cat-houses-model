@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, List
 import simpy
-from models import CatHouseType, RawWoodPlank, RawFabricRoll, PaintBucket
+from models import CatHousePart, CatHouseSpec, CatHouseType, PremiumCatHouse, RawWoodPlank, RawFabricRoll, PaintBucket
 from models import Color, WoodenHousePart, WoodenPartType, FabricHousePart, FabricPartType
 from models import StandardHouseSpec, PremiumHouseSpec
 import random
@@ -8,19 +10,66 @@ import math
 from sortedcontainers import SortedList
 
 
-@dataclass
 class CatFactoryConfig:
-    PLANNED_HOUSES_NUM = 100
-    PLANNED_PREMIUM_RATIO = 0.3 
+    PLANNED_HOUSES_NUM: float
+    PLANNED_PREMIUM_RATIO: float 
 
-    STANDARD_HOUSE_SPEC = StandardHouseSpec()
-    PREMIUM_HOUSE_SPEC = PremiumHouseSpec()
+    HOUSE_SPECS: Dict[CatHouseType, CatHouseSpec]
 
-    MIN_PREMIUM_WOOD_QUALITY = 0.7
-    MIN_PREMIUM_FABRIC_QUALITY = 0.7
-    MIN_PREMIUM_PAINT_QUALITY = 0.7
+    PLANNED_HOUSES_NUMS: Dict[CatHouseType, int]
 
-    BROKEN_PLANKS_RATIO = 0.02
+    MIN_PREMIUM_WOOD_QUALITY: float
+    MIN_PREMIUM_FABRIC_QUALITY: float
+    MIN_PREMIUM_PAINT_QUALITY: float
+
+    MIN_PREMIUM_WOODEN_PART_QUALITY: float 
+    MIN_PREMIUM_FABRIC_PART_QUALITY: float 
+
+    BROKEN_PLANKS_RATIO: float
+    BROKEN_ROLLS_RATIO: float
+
+    BROKEN_PARTS_RATIO: float
+
+    BUILDERS_NUM: int
+    CATS_NUM: int
+
+    def __init__(
+            self,
+            PLANNED_HOUSES_NUM = 100,
+            PLANNED_PREMIUM_RATIO = 0.5,
+            MIN_PREMIUM_WOOD_QUALITY = 0.7,
+            MIN_PREMIUM_FABRIC_QUALITY = 0.7,
+            MIN_PREMIUM_PAINT_QUALITY = 0.7,
+            MIN_PREMIUM_WOODEN_PART_QUALITY = 0.7,
+            MIN_PREMIUM_FABRIC_PART_QUALITY = 0.7,
+            BROKEN_PLANKS_RATIO = 0.02,
+            BROKEN_ROLLS_RATIO = 0.02,
+            BROKEN_PARTS_RATIO = 0.02,
+            BUILDERS_NUM = 4,
+            CATS_NUM = 4
+        ):
+        self.PLANNED_HOUSES_NUM = PLANNED_HOUSES_NUM
+        self.PLANNED_PREMIUM_RATIO = PLANNED_PREMIUM_RATIO
+        self.MIN_PREMIUM_WOOD_QUALITY = MIN_PREMIUM_WOOD_QUALITY
+        self.MIN_PREMIUM_FABRIC_QUALITY = MIN_PREMIUM_FABRIC_QUALITY
+        self.MIN_PREMIUM_PAINT_QUALITY = MIN_PREMIUM_PAINT_QUALITY
+        self.MIN_PREMIUM_WOODEN_PART_QUALITY = MIN_PREMIUM_WOODEN_PART_QUALITY
+        self.MIN_PREMIUM_FABRIC_PART_QUALITY = MIN_PREMIUM_FABRIC_PART_QUALITY
+        self.BROKEN_PLANKS_RATIO = BROKEN_PLANKS_RATIO
+        self.BROKEN_ROLLS_RATIO = BROKEN_ROLLS_RATIO
+        self.BROKEN_PARTS_RATIO = BROKEN_PARTS_RATIO
+        self.BUILDERS_NUM = BUILDERS_NUM
+        self.CATS_NUM = CATS_NUM
+
+        self.PLANNED_HOUSES_NUMS = {
+            CatHouseType.PREMIUM: self.get_planned_premium_houses_num(),
+            CatHouseType.STANDARD: self.get_planned_standard_houses_num()
+        }
+
+        self.HOUSE_SPECS = {
+           CatHouseType.STANDARD: StandardHouseSpec(), 
+            CatHouseType.PREMIUM: PremiumHouseSpec()
+        }
 
     def get_planned_premium_houses_num(self):
         return int(self.PLANNED_HOUSES_NUM * self.PLANNED_PREMIUM_RATIO)
@@ -28,6 +77,11 @@ class CatFactoryConfig:
     def get_planned_standard_houses_num(self):
         return self.PLANNED_HOUSES_NUM - self.get_planned_premium_houses_num()
 
+
+class HouseBuildResult(Enum):
+    NOT_ENOUGH_RESOURCES = 1
+    SUCCESSFUL = 2
+    BROKEN_PARTS = 3
 
 # =============== #
 #    СИМУЛЯЦИЯ    #
@@ -47,9 +101,21 @@ class CatHouseFactory:
         self.config = config
         
         # Очереди для обработанных деталей
-        self.wooden_parts_store = SortedList(key=lambda p: p.quality)
-        # self.fabric_parts_store = simpy.Store(env)
-        
+        self.wooden_parts_store = {t: SortedList(key=lambda p: p.quality) for t in set(WoodenPartType)}
+        self.fabric_parts_store = {t: SortedList(key=lambda p: p.quality) for t in set(FabricPartType)}
+
+        self.builders = simpy.Resource(env, self.config.BUILDERS_NUM)
+        self.cats = simpy.Resource(env, self.config.CATS_NUM)
+
+        self.house_build_tasks = {
+            CatHouseType.STANDARD: 0,
+            CatHouseType.PREMIUM: 0
+        }        
+
+        self.built_houses = {
+            CatHouseType.STANDARD: [],
+            CatHouseType.PREMIUM: []
+        } 
     
     def run(self, *args, **kwargs):
         # Запуск процессов
@@ -59,15 +125,49 @@ class CatHouseFactory:
 
     def orchestrate(self):
         yield self.env.process(self.material_delivery())
-        yield self.env.process(self.wood_processing())
+        
+        # проработка премиум деталей
+        yield simpy.AllOf(
+            self.env,
+            [
+                self.env.process(self.part_processing(set(WoodenPartType), CatHouseType.PREMIUM)),
+                self.env.process(self.part_processing(set(FabricPartType), CatHouseType.PREMIUM))
+            ])
 
-        print(f"Конец: {self.env.now}")
+        # проработка обычных деталей
+        yield simpy.AllOf(
+            self.env,
+            [
+                self.env.process(self.part_processing(set(WoodenPartType), CatHouseType.STANDARD)),
+                self.env.process(self.part_processing(set(FabricPartType), CatHouseType.STANDARD))
+            ])
+
+        print(f"{self.env.now} Завершена обработка деталей")
         print(f"Состояние:")
         print(f"{len(self.raw_wood_planks)} планок дерева")
         print(f"{len(self.raw_fabric_rolls)} рулонов ткани")
         print(f"{len(self.paint_stock)} ведер краски")
-        print(f"{len(self.wooden_parts_store)} деревянных деталей")
+        print(f"{sum(len(parts) for parts in self.wooden_parts_store.values())} деревянных деталей")
+        print(f"{sum(len(parts) for parts in self.fabric_parts_store.values())} тканевых деталей")
+
+        print(f"{self.env.now} Начинается сборка премиум домов")
+        yield self.env.process(self.build_houses(CatHouseType.PREMIUM))
+        print(f"{self.env.now} Cборка премиум домов завершена")
+        print(f"{self.env.now} Начинается сборка стандартных домов")
+        yield self.env.process(self.build_houses(CatHouseType.STANDARD))
+        print(f"{self.env.now} Cборка стандартных домов завершена")
     
+        print(f"{self.env.now} Завершена обработка деталей")
+        print(f"Состояние:")
+        print(f"{len(self.raw_wood_planks)} планок дерева")
+        print(f"{len(self.raw_fabric_rolls)} рулонов ткани")
+        print(f"{len(self.paint_stock)} ведер краски")
+        print(f"{sum(len(parts) for parts in self.wooden_parts_store.values())} деревянных деталей")
+        print(f"{sum(len(parts) for parts in self.fabric_parts_store.values())} тканевых деталей")
+        print(f"{len(self.built_houses[CatHouseType.PREMIUM])} премиум домиков")
+        print(f"{len(self.built_houses[CatHouseType.STANDARD])} стандартных домиков")
+
+
         
 
     def material_delivery(self):
@@ -78,44 +178,45 @@ class CatHouseFactory:
         standard_houses_num = self.config.get_planned_standard_houses_num()
         print(f"Запланировано {premium_houses_num} премиум и {standard_houses_num} стандартных домиков")
         
-        standard_wood_cost = self.config.STANDARD_HOUSE_SPEC.get_wood_cost() * standard_houses_num
-        premium_wood_cost = self.config.PREMIUM_HOUSE_SPEC.get_wood_cost() * premium_houses_num
+        house_types = set(CatHouseType)
+        house_specs = self.config.HOUSE_SPECS
+        planned_houses_nums = self.config.PLANNED_HOUSES_NUMS
 
-        standard_fabric_cost = self.config.STANDARD_HOUSE_SPEC.get_fabric_cost() * standard_houses_num
-        premium_fabric_cost = self.config.PREMIUM_HOUSE_SPEC.get_fabric_cost() * premium_houses_num
+        wood_costs = {
+            house_type: house_specs[house_type].get_wood_cost() * planned_houses_nums[house_type]
+            for house_type in house_types
+        }
 
-        standard_paint_cost = self.config.STANDARD_HOUSE_SPEC.get_paint_cost() * standard_houses_num
-        premium_paint_cost = self.config.PREMIUM_HOUSE_SPEC.get_paint_cost() * premium_houses_num
+        fabric_costs = {
+            house_type: house_specs[house_type].get_fabric_cost() * planned_houses_nums[house_type]
+            for house_type in house_types
+        }
 
+        paint_costs = {
+            house_type: house_specs[house_type].get_paint_cost() * planned_houses_nums[house_type]
+            for house_type in house_types
+        }
 
         yield self.env.timeout(15)
 
-        # TODO: randomize
-        # закупка дерева
-        premium_raw_wood_batch = [RawWoodPlank(
-            quality=random.uniform(0.7, 0.9)) for _ in range(premium_wood_cost)] 
-        standard_raw_wood_batch = [RawWoodPlank(
-            quality=random.uniform(0.7, 0.9)) for _ in range(standard_wood_cost)] 
-        raw_wood_batch = premium_raw_wood_batch + standard_raw_wood_batch
+        raw_wood_batch = [
+            RawWoodPlank(
+                quality=random.uniform(0.7, 0.9)  # TODO: distribution + parametrize by housetype 
+            ) for house_type, cost in wood_costs.items() for _ in range(cost)
+        ]
 
-        # закупка ткани
-        premium_raw_fabric_batch = [RawFabricRoll(
-            quality=random.uniform(0.75, 0.95)) for _ in range(premium_fabric_cost)]
-        standard_raw_fabric_batch = [RawFabricRoll(
-            quality=random.uniform(0.75, 0.95)) for _ in range(standard_fabric_cost)]
-        raw_fabric_batch = premium_raw_fabric_batch + standard_raw_fabric_batch
-        
-        # закупка краски
-        premium_paint_batch = [PaintBucket(
-            quality=random.uniform(0.7, 0.9),
-            color=random.choice(list(Color))
-            ) for _ in range(premium_paint_cost)] 
-        standard_paint_batch = [PaintBucket(
-            quality=random.uniform(0.7, 0.9),
-            color=random.choice(list(Color))
-            ) for _ in range(standard_paint_cost)] 
-        paint_batch = premium_paint_batch + standard_paint_batch
+        raw_fabric_batch = [
+            RawFabricRoll(
+                quality=random.uniform(0.7, 0.9)  # TODO: distribution + parametrize by housetype 
+            ) for house_type, cost in wood_costs.items() for _ in range(cost)
+        ]
 
+        paint_batch = [
+            PaintBucket(
+                quality=random.uniform(0.7, 0.9),  # TODO: distribution + parametrize by housetype 
+                color=random.choice(list(Color))
+            ) for house_type, cost in wood_costs.items() for _ in range(cost)
+        ]
 
         # доставка материалов
         for plank in raw_wood_batch:
@@ -133,52 +234,76 @@ class CatHouseFactory:
                 f"Ткань: {len(raw_fabric_batch)}ед, "
                 f"Краска: {len(paint_batch)}ед")
 
-    
-    def wood_processing(self):
-        print(f"{self.env.now} начало изготовления деревянных деталей")
 
-        premium_parts_to_make =(
-                self.config.PREMIUM_HOUSE_SPEC.get_parts_by_types(set(WoodenPartType))
-                * self.config.get_planned_premium_houses_num()
-        )
-        standard_parts_to_make = (
-                self.config.STANDARD_HOUSE_SPEC.get_parts_by_types(set(WoodenPartType))
-                * self.config.get_planned_standard_houses_num()
-        )
-        
-        parts_planned = len(premium_parts_to_make + standard_parts_to_make)
+    def part_processing(self, part_types, house_type: CatHouseType):
+        print(f"{self.env.now} начало изготовления деталей типов {part_types} для дома типа {house_type}")
+
+        house_spec = self.config.HOUSE_SPECS[house_type] 
+        planned_houses_num = self.config.PLANNED_HOUSES_NUMS[house_type]
+        parts_to_make = house_spec.get_parts_by_types(part_types) * planned_houses_num
+
+        parts_planned = len(parts_to_make)
         parts_completed = 0
 
-        print(f"Планируется изготовление следующих деталей {parts_planned}")
-        print(premium_parts_to_make)
-        for i, part_type in enumerate(premium_parts_to_make):
+        print(f"Изготавливаем {parts_planned} деталей")
+        for i, part_type in enumerate(parts_to_make):
             # print(f"Делаем {i} премиум деталь")
-            while self.has_mats_for_wooden_part(True):
-                result_event = yield self.env.process(self.make_wooden_part(part_type))
-                if result_event.value:  # если получилось, переходим к следующей
-                    parts_completed += 1
-                    break
-            
-        
-        for part_type in standard_parts_to_make:
-            while self.has_mats_for_wooden_part(False):
-                result_event = yield self.env.process(self.make_wooden_part(part_type))
+            while self.has_mats_for_part(part_type, house_type):
+                result_event = yield self.env.process(self.make_part(part_type))
                 if result_event.value:  # если получилось, переходим к следующей
                     parts_completed += 1
                     break
 
-
-        print(f"{self.env.now} конец изготовления деревянных деталей")
+        print(f"{self.env.now} конец изготовления деталей типов {part_types} для дома типа {house_type}")
         print(f"Всего изготовлено деталей {parts_completed} из {parts_planned}")
-        print(f"Изготовленные детали: {list(self.wooden_parts_store)}")
 
 
-    def has_mats_for_wooden_part(self, is_premium):
-        return (len(self.raw_wood_planks) > 0 
-            and (not is_premium or self.raw_wood_planks[-1].quality > self.config.MIN_PREMIUM_WOOD_QUALITY) 
-            and len(self.paint_stock) > 0 
-            and (not is_premium or self.paint_stock[-1].quality > self.config.MIN_PREMIUM_PAINT_QUALITY))
+    def has_mats_for_part(self, part_type, house_type):
+        is_premium = house_type in {CatHouseType.PREMIUM}
+        if part_type in set(WoodenPartType):
+            return (len(self.raw_wood_planks) > 0 
+                and (not is_premium or self.raw_wood_planks[-1].quality > self.config.MIN_PREMIUM_WOOD_QUALITY) 
+                and len(self.paint_stock) > 0 
+                and (not is_premium or self.paint_stock[-1].quality > self.config.MIN_PREMIUM_PAINT_QUALITY))
+        if part_type in set(FabricPartType):
+            return (len(self.raw_fabric_rolls) > 0 
+                and (not is_premium or self.raw_fabric_rolls[-1].quality > self.config.MIN_PREMIUM_FABRIC_QUALITY) 
+                and len(self.paint_stock) > 0 
+                and (not is_premium or self.paint_stock[-1].quality > self.config.MIN_PREMIUM_PAINT_QUALITY))
+        raise Exception(f"unrecognized part_type: {part_type}")
 
+    def make_part(self, part_type):
+        if part_type in set(WoodenPartType):
+            return self.make_wooden_part(part_type)
+        if part_type in set(FabricPartType):
+            return self.make_fabric_part(part_type)
+        raise Exception(f"unrecognized part_type: {part_type}")
+    
+        
+    def make_fabric_part(self, part_type: FabricPartType):
+        plank: RawFabricRoll = self.raw_fabric_rolls.pop()
+        paint_bucket: PaintBucket = self.paint_stock.pop()
+
+        # print(f"{self.env.now} Изготавливаем деталь {part_type}")
+        yield self.env.timeout(10) # TODO: rng
+        
+        # break logic
+        if (random.uniform(0.0, 1.0) < self.config.BROKEN_ROLLS_RATIO):
+            print(f"{self.env.now} Сломалась деталь {part_type}")
+            return self.env.event().succeed(False)  
+
+        process_quality = random.uniform(0.7, 0.9) # TODO: randomize
+        quality = math.prod([plank.quality, paint_bucket.quality, process_quality]) ** (1 / 3)
+        part = FabricHousePart(
+            quality=quality, 
+            color=paint_bucket.color, 
+            type=part_type)
+        self.fabric_parts_store[part_type].add(part)
+
+        # print(f"{self.env.now} Готова деталь {part_type}")
+
+        return self.env.event().succeed(True)
+    
     def make_wooden_part(self, part_type: WoodenPartType):
         plank: RawWoodPlank = self.raw_wood_planks.pop()
         paint_bucket: PaintBucket = self.paint_stock.pop()
@@ -198,12 +323,104 @@ class CatHouseFactory:
             quality=quality, 
             color=paint_bucket.color, 
             type=part_type)
-        self.wooden_parts_store.add(part)
+        self.wooden_parts_store[part_type].add(part)
 
         # print(f"{self.env.now} Готова деталь {part_type}")
 
         return self.env.event().succeed(True)
             
 
+
+    def build_houses(self, house_type: CatHouseType):
+        self.house_build_tasks[house_type] = self.config.PLANNED_HOUSES_NUMS[house_type]
+
+        while self.house_build_tasks[house_type] > 0:
+            with self.builders.request() as builder_request:
+                yield builder_request
+
+                self.house_build_tasks[house_type] -= 1
+                house_build_result = yield self.env.process(self.build_house(house_type))
+                if house_build_result.value == HouseBuildResult.SUCCESSFUL:
+                    continue
+                elif house_build_result.value == HouseBuildResult.BROKEN_PARTS:
+                    self.house_build_tasks += 1
+                elif house_build_result.value == HouseBuildResult.NOT_ENOUGH_RESOURCES:
+                    self.house_build_tasks = 0
+                    break
+
+    def build_house(self, house_type: CatHouseType):
+        house_spec = self.config.HOUSE_SPECS[house_type]
+        parts_to_get = house_spec.get_parts()
+
+        retrieved_parts = []
+        for part_type in parts_to_get:
+            if self.has_house_part(part_type, house_type):
+                retrieved_parts.append(self.get_house_part(part_type))
+            else:
+                self.return_parts(retrieved_parts)
+                return self.env.event().succeed(HouseBuildResult.NOT_ENOUGH_RESOURCES)
+
+        yield self.env.timeout(10)
+
+        used_parts = [(part, random.uniform(0.0, 1.0) < self.config.BROKEN_PARTS_RATIO) for part in retrieved_parts]
+        unbroken_parts = [part for part, is_broken in used_parts if not is_broken]
+        if len(unbroken_parts) > len(used_parts):
+            self.return_parts(unbroken_parts)
+            return self.env.event().succeed(HouseBuildResult.BROKEN_PARTS)
+        
+        if isinstance(house_type, CatHouseType.PREMIUM):
+            build_quality = random.uniform(0.8, 1.0)
+            self.built_houses[house_type].append(
+                PremiumCatHouse(
+                    build_quality=build_quality,
+                    parts=unbroken_parts
+                )
+            )
+        elif isinstance(house_type, CatHouseType.STANDARD):
+            build_quality = random.uniform(0.7, 0.9)
+            self.built_houses[house_type].append(
+                PremiumCatHouse(
+                    build_quality=build_quality,
+                    parts=unbroken_parts
+                )
+            )
+        return self.env.event().succeed(HouseBuildResult.SUCCESSFUL)
+        
+        
+
+
+    def return_parts(self, parts: List[CatHousePart]):
+        for part in parts:
+            if isinstance(part, WoodenHousePart):
+                self.wooden_parts_store[part.get_type()].add(part)
+            elif isinstance(part, FabricHousePart):
+                self.wooden_parts_store[part.get_type()].add(part)
+    
+    def has_house_part(self, house_part: CatHousePart, house_type: CatHouseType):
+        if isinstance(house_part, WoodenHousePart):
+            return (
+                len(self.wooden_parts_store[house_part]) > 0
+                and (
+                    house_type == CatHouseType.STANDARD 
+                    or self.wooden_parts_store[house_part][-1].quality > self.config.MIN_PREMIUM_WOODEN_PART_QUALITY
+                )
+            )
+        elif isinstance(house_part, WoodenHousePart):
+            return (
+                len(self.wooden_parts_store[house_part]) > 0
+                and (
+                    house_type == CatHouseType.STANDARD 
+                    or self.wooden_parts_store[house_part][-1].quality > self.config.MIN_PREMIUM_FABRIC_PART_QUALITY
+                )
+            )
+        
+    def get_house_part(self, house_part: CatHousePart):
+        if isinstance(house_part, WoodenHousePart):
+            return self.wooden_parts_store[house_part].pop()
+        if isinstance(house_part, FabricHousePart):
+            return self.fabric_parts_store[house_part].pop()
+        
+        
+        
 
     
