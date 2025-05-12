@@ -170,10 +170,11 @@ class HouseTestResult():
 # =============== #
 
 class CatHouseFactory:
-    def __init__(self, env: simpy.Environment, config: CatFactoryConfig, rng: CustomRNG):
+    def __init__(self, env: simpy.Environment, config: CatFactoryConfig, rng: CustomRNG, logging_on=False):
         self.env = env
         self.rng = rng
         self.config = config
+        self.logging_on = logging_on
 
         self.stats = []
 
@@ -217,6 +218,9 @@ class CatHouseFactory:
             HouseVerdict.UTILIZATION: []
         }
         
+    def log(self, message):
+        if self.logging_on:
+            print(f"{self.env.now}|{message}")
 
     def get_stats(self):
         return self.stats
@@ -234,15 +238,15 @@ class CatHouseFactory:
         self.current_stats["total_execution_time"] = total_execution_time
 
     def materials_supply_phase(self):
-        print(f"{self.env.now} Начинается фаза поставки сырья")
+        self.log(f"Начинается фаза поставки сырья")
         phase_start = self.env.now
         yield self.env.process(self.material_delivery())
-        print(f"{self.env.now} Завершена фаза поставки сырья")
+        self.log(f"Завершена фаза поставки сырья")
         execution_time = self.env.now - phase_start
         self.current_stats["execution_times_by_phase"]["materials_supply_phase"] = execution_time
 
     def manufacturing_parts_phase(self):
-        print(f"{self.env.now} Начинается фаза производства деталей")
+        self.log(f"Начинается фаза производства деталей")
         phase_start = self.env.now
         # проработка премиум деталей
         yield simpy.AllOf(
@@ -262,40 +266,40 @@ class CatHouseFactory:
         execution_time = self.env.now - phase_start
         self.current_stats["execution_times_by_phase"]["manufacturing_parts_phase"] = execution_time
         
-        print(f"{self.env.now} Завершена фаза производства деталей")
-        print(f"Состояние:")
-        print(f"{len(self.raw_wood_planks)} планок дерева")
-        print(f"{len(self.raw_fabric_rolls)} рулонов ткани")
-        print(f"{len(self.paint_stock)} ведер краски")
-        print(f"{sum(len(parts) for parts in self.wooden_parts_store.values())} деревянных деталей")
-        print(f"{sum(len(parts) for parts in self.fabric_parts_store.values())} тканевых деталей")
+        self.log(f"Завершена фаза производства деталей")
+        self.log(f"Состояние:")
+        self.log(f"{len(self.raw_wood_planks)} планок дерева")
+        self.log(f"{len(self.raw_fabric_rolls)} рулонов ткани")
+        self.log(f"{len(self.paint_stock)} ведер краски")
+        self.log(f"{sum(len(parts) for parts in self.wooden_parts_store.values())} деревянных деталей")
+        self.log(f"{sum(len(parts) for parts in self.fabric_parts_store.values())} тканевых деталей")
 
     def assembling_houses_phase(self):
-        print(f"{self.env.now} Начинается фаза сборки домиков")
+        self.log(f"Начинается фаза сборки домиков")
         start_time = self.env.now
 
-        print(f"{self.env.now} Начинается сборка премиум домиков")
+        self.log(f"Начинается сборка премиум домиков")
         yield self.env.process(self.build_houses(CatHouseType.PREMIUM))
-        print(f"{self.env.now} Cборка премиум домиков завершена")
+        self.log(f"Cборка премиум домиков завершена")
 
-        print(f"{self.env.now} Начинается сборка стандартных домиков")
+        self.log(f"Начинается сборка стандартных домиков")
         yield self.env.process(self.build_houses(CatHouseType.STANDARD))
-        print(f"{self.env.now} Cборка стандартных домиков завершена")
+        self.log(f"Cборка стандартных домиков завершена")
         
         execution_time = self.env.now - start_time
         self.current_stats["execution_times_by_phase"]["assembling_houses_phase"] = execution_time
 
-        print(f"{self.env.now} Завершена фаза сборки домиков")
+        self.log(f"Завершена фаза сборки домиков")
         
-        print(f"Состояние:")
-        print(f"{sum(len(parts) for parts in self.wooden_parts_store.values())} деревянных деталей")
-        print(f"{sum(len(parts) for parts in self.fabric_parts_store.values())} тканевых деталей")
-        print(f"{len(self.built_houses[CatHouseType.PREMIUM])} премиум домиков")
-        print(f"{len(self.built_houses[CatHouseType.STANDARD])} стандартных домиков")
+        self.log(f"Состояние:")
+        self.log(f"{sum(len(parts) for parts in self.wooden_parts_store.values())} деревянных деталей")
+        self.log(f"{sum(len(parts) for parts in self.fabric_parts_store.values())} тканевых деталей")
+        self.log(f"{len(self.built_houses[CatHouseType.PREMIUM])} премиум домиков")
+        self.log(f"{len(self.built_houses[CatHouseType.STANDARD])} стандартных домиков")
 
         
     def testing_houses_phase(self):
-        print(f"{self.env.now} Начинается фаза тестирования домиков")
+        self.log(f"Начинается фаза тестирования домиков")
         start_time = self.env.now
         
         yield self.env.process(self.test_houses())
@@ -303,13 +307,13 @@ class CatHouseFactory:
         execution_time = self.env.now - start_time
         self.current_stats["execution_times_by_phase"]["testing_houses_phase"] = execution_time
 
-        print(f"{self.env.now} Завершена фаза тестирования домиков")
+        self.log(f"Завершена фаза тестирования домиков")
 
-        print(f"Состояние:")
-        print(f"{len(self.houses_to_test)} непротестированных домиков")
-        print(f"{sum(len(results) for results in self.house_test_results.values())} всего протестировано домиков")
-        print(f"{len(self.house_test_results[HouseVerdict.UTILIZATION])} к утилизации")
-        print(f"{len(self.house_test_results[HouseVerdict.SUITABLE_FOR_SALE])} к продаже")
+        self.log(f"Состояние:")
+        self.log(f"{len(self.houses_to_test)} непротестированных домиков")
+        self.log(f"{sum(len(results) for results in self.house_test_results.values())} всего протестировано домиков")
+        self.log(f"{len(self.house_test_results[HouseVerdict.UTILIZATION])} к утилизации")
+        self.log(f"{len(self.house_test_results[HouseVerdict.SUITABLE_FOR_SALE])} к продаже")
 
         self.current_stats["for_utilization"] = len(self.house_test_results[HouseVerdict.UTILIZATION])
         self.current_stats["for_sale"] = len(self.house_test_results[HouseVerdict.SUITABLE_FOR_SALE])
@@ -317,13 +321,13 @@ class CatHouseFactory:
 
 
     def material_delivery(self):
-        print(f"{self.env.now}: Начата закупка сырья")
+        self.log(f"Начата закупка сырья")
 
         # расчет необходимых материалов
         rng_config = self.config.RNG_CONFIG
         premium_houses_num = self.config.get_planned_premium_houses_num()
         standard_houses_num = self.config.get_planned_standard_houses_num()
-        print(f"Запланировано {premium_houses_num} премиум и {standard_houses_num} стандартных домиков")
+        self.log(f"Запланировано {premium_houses_num} премиум и {standard_houses_num} стандартных домиков")
         
         house_types = set(CatHouseType)
         house_specs = self.config.HOUSE_SPECS
@@ -388,15 +392,15 @@ class CatHouseFactory:
         for bucket in paint_batch:
             self.paint_stock.add(bucket)
         
-        print(f"{self.env.now}: Закупка сырья завершена")
-        print(f"{self.env.now}: Поставка материалов | "
+        self.log(f"Закупка сырья завершена")
+        self.log(f"Поставка материалов | "
                 f"Дерево: {len(raw_wood_batch)}ед, "
                 f"Ткань: {len(raw_fabric_batch)}ед, "
                 f"Краска: {len(paint_batch)}ед")
 
 
     def part_processing(self, part_types, house_type: CatHouseType):
-        print(f"{self.env.now} начало изготовления деталей типов {part_types} для дома типа {house_type}")
+        self.log(f"начало изготовления деталей типов {part_types} для дома типа {house_type}")
         
         house_spec = self.config.HOUSE_SPECS[house_type] 
         planned_houses_num = self.config.PLANNED_HOUSES_NUMS[house_type]
@@ -405,17 +409,17 @@ class CatHouseFactory:
         parts_planned = len(parts_to_make)
         parts_completed = 0
 
-        print(f"Изготавливаем {parts_planned} деталей")
+        self.log(f"Изготавливаем {parts_planned} деталей")
         for i, part_type in enumerate(parts_to_make):
-            # print(f"Делаем {i} премиум деталь")
+            # self.log(f"Делаем {i} премиум деталь")
             while self.has_mats_for_part(part_type, house_type):
                 result_event = yield self.env.process(self.make_part(part_type))
                 if result_event.value:  # если получилось, переходим к следующей
                     parts_completed += 1
                     break
 
-        print(f"{self.env.now} конец изготовления деталей типов {part_types} для дома типа {house_type}")
-        print(f"Всего изготовлено деталей {parts_completed} из {parts_planned}")
+        self.log(f"конец изготовления деталей типов {part_types} для дома типа {house_type}")
+        self.log(f"Всего изготовлено деталей {parts_completed} из {parts_planned}")
 
 
     def has_mats_for_part(self, part_type, house_type):
@@ -455,7 +459,7 @@ class CatHouseFactory:
         
         # break logic
         if (self.rng.uniform(0.0, 1.0) < self.config.BROKEN_ROLLS_RATIO):
-            print(f"{self.env.now} Сломалась деталь {part_type}")
+            self.log(f"Сломалась деталь {part_type}")
             return self.env.event().succeed(False)  
 
         process_quality = random.uniform(0.7, 0.9) # TODO: randomize
@@ -483,7 +487,7 @@ class CatHouseFactory:
         
         # break logic 
         if (self.rng.uniform(0.0, 1.0) < self.config.BROKEN_PLANKS_RATIO):
-            print(f"{self.env.now} Сломалась деталь {part_type}")
+            self.log(f"Сломалась деталь {part_type}")
             return self.env.event().succeed(False)  
 
 
@@ -507,10 +511,10 @@ class CatHouseFactory:
         
 
     def builder_job(self, house_type):
-        print(f"{self.env.now} Начата смена сборщика, ждем освобождения")
+        self.log(f"Начата смена сборщика, ждем освобождения")
         with self.builders.request() as builder_request:
             yield builder_request
-            print(f"{self.env.now} Сборщик приступил к работе")
+            self.log(f"Сборщик приступил к работе")
             while self.house_build_tasks[house_type] > 0:
                 self.house_build_tasks[house_type] -= 1
                 house_build_result = yield self.env.process(self.build_house(house_type))
@@ -521,7 +525,7 @@ class CatHouseFactory:
                 elif house_build_result.value == HouseBuildResult.NOT_ENOUGH_RESOURCES:
                     self.house_build_tasks[house_type] = 0
                     break
-            print(f"{self.env.now} Смена сборщика завершена, задач на домик {house_type} больше нет")
+            self.log(f"Смена сборщика завершена, задач на домик {house_type} больше нет")
 
     def build_house(self, house_type: CatHouseType):
         rng_config = self.config.RNG_CONFIG
@@ -606,13 +610,13 @@ class CatHouseFactory:
         yield simpy.AllOf(self.env, cats_jobs)
 
     def cat_job(self):
-        print(f"{self.env.now} Начата смена котика, ждем приступления")
+        self.log(f"Начата смена котика, ждем приступления")
         with self.cats.request() as cat_request:
             yield cat_request
-            print(f"{self.env.now} Котик приступил к работе")
+            self.log(f"Котик приступил к работе")
             while len(self.houses_to_test) > 0:
                 yield self.env.process(self.test_house())
-            print(f"{self.env.now} Смена котика завершена, задач тестирование домиков больше нет")
+            self.log(f"Смена котика завершена, задач тестирование домиков больше нет")
 
     def test_house(self):
         rng_config = self.config.RNG_CONFIG
