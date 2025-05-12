@@ -103,7 +103,8 @@ class CatFactoryConfig:
             MAX_ENTRY_TIME = 30,
             MIN_TIME_INSIDE = 5,
             MAX_TEST_TIME = 60,
-            RNG_CONFIG = DEFAULT_RNG_CONFIG
+            RNG_CONFIG = DEFAULT_RNG_CONFIG,
+            DETAIL_PROCESSING_TIME_OVERRIDE = None, # костыль для удобства
         ):
         self.PLANNED_HOUSES_NUM = PLANNED_HOUSES_NUM
         self.PLANNED_PREMIUM_RATIO = PLANNED_PREMIUM_RATIO
@@ -121,6 +122,20 @@ class CatFactoryConfig:
         self.MIN_TIME_INSIDE = MIN_TIME_INSIDE
         self.MAX_TEST_TIME = MAX_TEST_TIME
         self.RNG_CONFIG = RNG_CONFIG
+    
+
+        # костыли
+        if DETAIL_PROCESSING_TIME_OVERRIDE is not None:
+            self.RNG_CONFIG['wooden_processing_time']['mu'] = DETAIL_PROCESSING_TIME_OVERRIDE
+            self.RNG_CONFIG['wooden_processing_time']['sigma'] = DETAIL_PROCESSING_TIME_OVERRIDE / 5
+            self.RNG_CONFIG['wooden_processing_time']['min_time'] = DETAIL_PROCESSING_TIME_OVERRIDE / 2
+            self.RNG_CONFIG['wooden_processing_time']['max_time'] = DETAIL_PROCESSING_TIME_OVERRIDE * 6
+        if DETAIL_PROCESSING_TIME_OVERRIDE is not None:
+            self.RNG_CONFIG['fabric_processing_time']['mu'] = DETAIL_PROCESSING_TIME_OVERRIDE / 2
+            self.RNG_CONFIG['fabric_processing_time']['sigma'] = DETAIL_PROCESSING_TIME_OVERRIDE / 10
+            self.RNG_CONFIG['fabric_processing_time']['min_time'] = DETAIL_PROCESSING_TIME_OVERRIDE / 4
+            self.RNG_CONFIG['fabric_processing_time']['max_time'] = DETAIL_PROCESSING_TIME_OVERRIDE * 3
+
 
         self.PLANNED_HOUSES_NUMS = {
             CatHouseType.PREMIUM: self.get_planned_premium_houses_num(),
